@@ -1,15 +1,7 @@
-name: Build RootFS (Ubuntu)
+name: Build RootFS (Ubuntu)-V3
 
-# 为小米平板 6S Pro (sheng, SM8550) 构建 Ubuntu rootfs.img + boot.img
-#
-# 结构说明（与上游 ianchb/debian-sheng 的差异）：
-#   * 设备功能包的构建抽到可复用工作流 .github/workflows/_packages.yml，
-#     本文件只负责"组装 rootfs"，避免上游那种每个 workflow 复制一份 600 行作业
-#   * 具体构建步骤全部放在 scripts/ 下的脚本里（宿主 scripts/host、镜像内 scripts/in-chroot），
-#     YAML 仅做编排与参数传递
-#   * 上游的 rootfs-lite.yml（测试用、不上传）在这里合并为一个输入项 upload_artifacts
-#   * Ubuntu 侧硬性要求：完全禁用 snap（见 scripts/in-chroot/15-nosnap.sh 与 90-verify.sh）
-#   * 新增：7z极限压缩 + 自动发布到 GitHub Release
+# 为小米平板6S Pro (sheng, SM8550) 构建 Ubuntu rootfs.img + boot.img
+# V3修订：修复文件名括号特殊字符、增加7z自动分卷逻辑
 on:
   workflow_dispatch:
     inputs:
@@ -20,10 +12,10 @@ on:
         default: '26.04 (resolute)'
         options:
           - '26.04 (resolute)'
-          - '26.10 (stonking)'
-          - '25.10 (questing)'
+          - '26.10'
+          - '25.10'
       desktop:
-        description: '桌面环境（server 无图形界面；Lomiri 就是原 Ubuntu Touch Unity8，专为触屏平板设计）'
+        description: '桌面环境（server 无图形界面；Lomiri即Ubuntu Touch桌面）'
         required: true
         type: choice
         default: 'KDE Plasma'
@@ -33,12 +25,12 @@ on:
           - 'Lomiri'
           - 'server'
       plasma_mobile:
-        description: '使用 plasma-mobile 移动端版本替代 plasma-desktop（仅 KDE Plasma 选项生效）'
+        description: '使用 plasma-mobile 移动端版本（仅KDE Plasma生效）'
         required: false
         type: boolean
         default: false
       browser:
-        description: '浏览器（Ubuntu 官方源 firefox 是 snap 过渡包，选 firefox 将从 Mozilla 官方 APT 源安装 DEB 原生版）'
+        description: '浏览器'
         required: false
         type: choice
         default: 'none'
@@ -46,41 +38,31 @@ on:
           - 'none'
           - 'firefox'
       autologin:
-        description: '开机自动登录（Lomiri 使用 greetd，固定自动登录，该选项对 Lomiri 无效）'
+        description: '开机自动登录（Lomiri默认开启自动登录）'
         required: false
         type: boolean
         default: true
       username:
-        description: '系统普通用户名称'
+        description: '系统用户名'
         required: false
-        type: string
-        default: 'username'
+        default: username
       hostname:
-        description: '设备主机名'
+        description: '主机名'
         required: false
-        type: string
-        default: 'xiaomi-sheng'
+        default: xiaomi-sheng
       password:
-        description: '镜像用户密码（留空优先读取 ROOTFS_PASSWORD secret；都为空则默认密码 password；⚠输入内容会明文显示在运行日志）'
+        description: '用户密码（留空优先读取仓库secret ROOTFS_PASSWORD）'
         required: false
-        type: string
         default: ''
       language:
-        description: '系统区域语言 locale'
-        required: false
+        description: '系统区域语言locale'
+        required: true
         type: choice
         default: 'None (C.UTF-8)'
         options:
           - 'None (C.UTF-8)'
-          - 'en_US.UTF-8'
           - 'zh_CN.UTF-8'
-          - 'zh_TW.UTF-8'
-          - 'ja_JP.UTF-8'
-          - 'ko_KR.UTF-8'
-          - 'de_DE.UTF-8'
-          - 'fr_FR.UTF-8'
-          - 'es_ES.UTF-8'
-          - 'ru_RU.UTF-8'
+          - 'en_US.UTF-8'
       boot_mode:
         description: '启动分区模式'
         required: true
@@ -91,17 +73,16 @@ on:
           - 'single (userdata)'
           - 'custom'
       custom_partition:
-        description: '自定义分区名称（仅 boot_mode=custom 模式生效）'
+        description: '自定义分区名称（仅custom模式生效）'
         required: false
-        type: string
         default: ''
       quiet_boot:
-        description: '安静开机（Plymouth 开机动画，server 模式会忽略该选项）'
+        description: '安静开机（Plymouth开机动画，server模式无效）'
         required: false
         type: boolean
         default: true
       kernel_source:
-        description: '内核来源（custom 自定义分区模式不支持预编译内核 prebuilt）'
+        description: '内核来源（custom模式不支持预编译内核）'
         required: true
         type: choice
         default: 'prebuilt'
@@ -109,59 +90,51 @@ on:
           - 'prebuilt'
           - 'custom_build'
       kernel_repo:
-        description: '自定义内核代码仓库（kernel_source=custom_build 才会使用）'
+        description: '内核仓库地址（custom内核编译使用）'
         required: false
-        type: string
         default: 'https://github.com/ianchb/sm8550-mainline'
       kernel_branch:
-        description: '内核仓库分支'
+        description: '内核分支'
         required: false
-        type: string
         default: 'sheng-7.2.6'
       kernel_config:
-        description: '内核编译配置文件（仓库内相对文件名）'
+        description: '内核配置文件路径'
         required: false
-        type: string
-        default: 'sm8550.config'
-      kernel_release:
-        description: '预编译内核版本号（留空自动拉最新release；填固定版本用于复现构建）'
+        default: 'config/sm8550'
+      kernel_release_ver:
+        description: '预编译内核版本号'
         required: false
-        type: string
         default: '7.2.6'
       firmware_repo:
-        description: '设备固件仓库'
+        description: '固件仓库地址'
         required: false
-        type: string
         default: 'https://github.com/ianchb/sheng-firmware'
       firmware_branch:
-        description: '固件仓库分支'
+        description: '固件分支'
         required: false
-        type: string
         default: 'master'
       rootfs_size:
-        description: 'rootfs.img 初始镜像大小（构建完成会自动收缩，首次开机自动扩容）'
+        description: 'rootfs镜像初始大小'
         required: false
-        type: string
         default: '10G'
       shrink_image:
-        description: '构建后自动收缩镜像（执行 e2fsck + resize2fs -M）'
+        description: '构建完成自动收缩镜像（e2fsck+resize2fs）'
         required: false
         type: boolean
         default: true
       upload_artifacts:
-        description: '上传临时构建产物到Actions Artifact（测试构建可关闭）'
+        description: '上传临时产物到Actions Artifact（7天后自动删除，测试构建开启）'
         required: false
         type: boolean
         default: true
       publish_release:
-        description: '发布产物到 GitHub Release（正式发布开启，测试构建关闭）'
+        description: '发布产物到GitHub Release（正式发布开启，测试构建关闭）'
         required: false
         type: boolean
         default: false
       release_tag:
-        description: 'Release标签名，例如 v1.0.0，留空自动生成标签'
+        description: 'Release标签名，例 v1.0.0，留空自动生成build-runid标签'
         required: false
-        type: string
         default: ''
 
 permissions:
@@ -171,18 +144,19 @@ permissions:
 
 jobs:
   packages:
-    name: Build Device Packages
+    name: 构建设备包
     uses: ./.github/workflows/_packages.yml
     with:
       kernel_source: ${{ inputs.kernel_source }}
       kernel_repo: ${{ inputs.kernel_repo }}
       kernel_branch: ${{ inputs.kernel_branch }}
       kernel_config: ${{ inputs.kernel_config }}
+      kernel_release_ver: ${{ inputs.kernel_release_ver }}
       firmware_repo: ${{ inputs.firmware_repo }}
       firmware_branch: ${{ inputs.firmware_branch }}
 
   build-rootfs:
-    name: Assemble Ubuntu RootFS
+    name: 汇编Ubuntu RootFS
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 360
     needs: packages
@@ -190,10 +164,11 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # ==============================================
-      # 【这里粘贴你原来组装rootfs、chroot、生成boot.img的所有步骤】
-      # 比如调用 scripts/host 里的构建脚本，生成 rootfs.img boot.img
-      # ==============================================
+      # ======================
+      # 【此处粘贴你原有rootfs构建脚本，生成rootfs.img boot.img】
+      # ======================
+      - name: 占位测试步骤（正式部署删除本行，替换为真实构建逻辑）
+        run: echo "占位，替换为rootfs构建脚本"
 
       # 安装7z
       - name: Install 7-Zip
@@ -201,40 +176,63 @@ jobs:
           sudo apt update
           sudo apt install -y p7zip-full
 
-      # 7z极限压缩，自适应算法
-      - name: 7z极限打包镜像
+      # 7z极限打包镜像：>=1.9GB自动分卷1900MB，否则单包，修复文件名特殊字符
+      - name: 7z极限打包镜像（自动分包）
         run: |
-          7z a -t7z -mx=9 -mfb=273 -md=1024m ubuntu-sheng-${{ inputs.ubuntu_series }}-${{ inputs.desktop }}.7z rootfs.img boot.img
+          set -e
+          SERIES_RAW="${{ inputs.ubuntu_series }}"
+          SERIES_SAFE="${SERIES_RAW//\(/_}"
+          SERIES_SAFE="${SERIES_SAFE//\)/_}"
+          DESK_RAW="${{ inputs.desktop }}"
+          DESK_SAFE="${DESK_RAW// /_}"
 
-      # 上传临时Artifact（可选，7天后自动删除）
+          PKG_NAME="ubuntu-sheng-${SERIES_SAFE}-${DESK_SAFE}"
+
+          # 统计原始img总字节
+          SIZE=$(stat -c %s rootfs.img boot.img | awk '{sum+=$1} END {print sum}')
+          THRESHOLD=$((1900 * 1024 * 1024))
+          echo "原始镜像总大小: $SIZE bytes"
+
+          if [ $SIZE -ge $THRESHOLD ]; then
+            echo "原始镜像总和 >=1.9GB，启用分卷1900MB"
+            7z a -t7z -mx=9 -mfb=273 -md=1024m -v1900m "${PKG_NAME}.7z" rootfs.img boot.img
+          else
+            echo "原始镜像总和 <1.9GB，打包为单个7z"
+            7z a -t7z -mx=9 -mfb=273 -md=1024m "${PKG_NAME}.7z" rootfs.img boot.img
+          fi
+        shell: bash
+
+      # 上传临时Artifact
       - name: Upload Actions Artifact
         if: ${{ inputs.upload_artifacts }}
         uses: actions/upload-artifact@v4
         with:
           name: ubuntu-rootfs-sheng
           path: |
-            *.7z
+            *.7z*
             rootfs.img
             boot.img
 
-      # ========== 核心：发布到GitHub Release ==========
+      # 发布到GitHub Release
       - name: Publish to GitHub Release
         if: ${{ inputs.publish_release }}
         uses: softprops/action-gh-release@v2
         with:
-          # 标签：优先使用手动输入，空则自动生成
           tag_name: ${{ inputs.release_tag || format('build-{0}', github.run_id) }}
           name: "Ubuntu ${{ inputs.ubuntu_series }} ${{ inputs.desktop }} for xiaomi-sheng(SM8550)"
           body: |
             ## 小米平板6S Pro (sheng SM8550) Ubuntu 镜像构建
-            - Ubuntu版本：${{ inputs.ubuntu_series }}
+            - Ubuntu发行版本：${{ inputs.ubuntu_series }}
+            - 构建日期：${{ github.run_created_at }}
             - 桌面环境：${{ inputs.desktop }}
             - 内核来源：${{ inputs.kernel_source }}
             - 语言：${{ inputs.language }}
+            - 构建Workflow: Build RootFS (Ubuntu)-V3
             - 构建Workflow ID: ${{ github.run_id }}
             - 构建提交SHA: ${{ github.sha }}
+            > ⚠️ 分卷下载说明：全部下载 .7z.001 .7z.002... 放到同一目录，打开001即可解压全部
           files: |
-            *.7z
+            *.7z*
             rootfs.img
             boot.img
           append_body: true
