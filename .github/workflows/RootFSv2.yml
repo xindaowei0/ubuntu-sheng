@@ -1,0 +1,176 @@
+name: Build RootFS (Ubuntu)
+
+# 为小米平板 6S Pro (sheng, SM8550) 构建 Ubuntu rootfs.img + boot.img
+#
+# 结构说明（与上游 ianchb/debian-sheng 的差异）：
+#   * 设备功能包的构建抽到可复用工作流 .github/workflows/_packages.yml，
+#     本文件只负责"组装 rootfs"，避免上游那种每个 workflow 复制一份 600 行作业
+#   * 具体构建步骤全部放在 scripts/ 下的脚本里（宿主 scripts/host、镜像内 scripts/in-chroot），
+#     YAML 仅做编排与参数传递
+#   * 上游的 rootfs-lite.yml（测试用、不上传）在这里合并为一个输入项 upload_artifacts
+#   * Ubuntu 侧硬性要求：完全禁用 snap（见 scripts/in-chroot/15-nosnap.sh 与 90-verify.sh）
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu_series:
+        description: 'Ubuntu 版本'
+        required: true
+        type: choice
+        default: '26.04 (resolute)'
+        options:
+          - '26.04 (resolute)'
+          - '26.10 (stonking)'
+          - '25.10 (questing)'
+      desktop:
+        description: '桌面环境（server 为无图形界面；Lomiri = 原 Ubuntu Touch 的 Unity8，为触屏平板设计）'
+        required: true
+        type: choice
+        default: 'GNOME'
+        options:
+          - 'KDE Plasma'
+          - 'GNOME'
+          - 'Lomiri'
+          - 'server'
+      plasma_mobile:
+        description: '使用 plasma-mobile 替代 plasma-desktop（仅 KDE Plasma 生效）'
+        required: false
+        type: boolean
+        default: false
+      browser:
+        description: '浏览器（Ubuntu 主归档的 firefox 是 snap 过渡包，选择 firefox 将从 Mozilla 官方 apt 源安装 deb 版）'
+        required: false
+        type: choice
+        default: 'none'
+        options:
+          - 'none'
+          - 'firefox'
+      autologin:
+        description: '自动登录（Lomiri 经 greetd 恒为自动登录，本项对它无效）'
+        required: false
+        type: boolean
+        default: true
+      username:
+        description: '普通用户名'
+        required: false
+        type: string
+        default: 'username'
+      hostname:
+        description: '主机名'
+        required: false
+        type: string
+        default: 'xiaomi-sheng'
+      password:
+        description: '镜像密码（留空则用 ROOTFS_PASSWORD secret，都为空则为默认 password）；注意输入值会明文显示在运行页面'
+        required: false
+        type: string
+        default: ''
+      language:
+        description: '系统语言（locale）'
+        required: false
+        type: choice
+        default: 'zh_CN.UTF-8'
+        options:
+          - 'None (C.UTF-8)'
+          - 'en_US.UTF-8'
+          - 'zh_CN.UTF-8'
+          - 'zh_TW.UTF-8'
+          - 'ja_JP.UTF-8'
+          - 'ko_KR.UTF-8'
+          - 'de_DE.UTF-8'
+          - 'fr_FR.UTF-8'
+          - 'es_ES.UTF-8'
+          - 'ru_RU.UTF-8'
+      boot_mode:
+        description: '启动分区模式'
+        required: true
+        type: choice
+        default: 'single (userdata)'
+        options:
+          - 'dual (linux)'
+          - 'single (userdata)'
+          - 'custom'
+      custom_partition:
+        description: '自定义分区名（仅 boot_mode=custom 时需要）'
+        required: false
+        type: string
+        default: ''
+      quiet_boot:
+        description: '安静启动（Plymouth，server 模式忽略）'
+        required: false
+        type: boolean
+        default: true
+      kernel_source:
+        description: '内核来源（custom 分区模式不支持 prebuilt）'
+        required: true
+        type: choice
+        default: 'prebuilt'
+        options:
+          - 'prebuilt'
+          - 'custom_build'
+      kernel_repo:
+        description: '自定义内核仓库（kernel_source=custom_build 时使用）'
+        required: false
+        type: string
+        default: 'https://github.com/ianchb/sm8550-mainline'
+      kernel_branch:
+        description: '内核分支'
+        required: false
+        type: string
+        default: 'sheng-7.2.6'
+      kernel_config:
+        description: '内核配置文件（仓库内文件名）'
+        required: false
+        type: string
+        default: 'sm8550.config'
+      kernel_release:
+        description: 'prebuilt 内核取哪个 release（留空则取最新；固定版本可复现构建）'
+        required: false
+        type: string
+        default: '7.2.6'
+      firmware_repo:
+        description: '设备固件仓库'
+        required: false
+        type: string
+        default: 'https://github.com/ianchb/sheng-firmware'
+      firmware_branch:
+        description: '固件仓库分支'
+        required: false
+        type: string
+        default: 'master'
+      rootfs_size:
+        description: 'rootfs.img 初始大小（构建后会收缩，首启自动扩容）'
+        required: false
+        type: string
+        default: '10G'
+      shrink_image:
+        description: '构建后收缩镜像（e2fsck + resize2fs -M）'
+        required: false
+        type: boolean
+        default: true
+      upload_artifacts:
+        description: '上传 rootfs.img / boot.img（测试时可关闭）'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+jobs:
+  packages:
+    name: Build Device Packages
+    uses: ./.github/workflows/_packages.yml
+    with:
+      kernel_source: ${{ inputs.kernel_source }}
+      kernel_repo: ${{ inputs.kernel_repo }}
+      kernel_branch: ${{ inputs.kernel_branch }}
+      kernel_config: ${{ inputs.kernel_config }}
+      firmware_repo: ${{ inputs.firmware_repo }}
+      firmware_branch: ${{ inputs.firmware_branch }}
+
+  build-rootfs:
+    name: Assemble Ubuntu RootFS
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
